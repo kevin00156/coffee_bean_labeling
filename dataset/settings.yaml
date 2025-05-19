@@ -1,0 +1,17 @@
+coffee_bean_pixel_threshold:
+  lower: 500
+  upper: 50000
+dataset_paths:
+- dataset/Coffee bean dataset/dataset.yaml
+- dataset/coffee_bean_dataset_pixel7/dataset.yaml
+- dataset/coffee_bean_dataset/dataset.yaml
+labels:
+  a: INSECT_DAMAGE
+  c: LOOKS_WEIRD
+  d: BROKEN
+  e: OVERLAPPED
+  r: OTHER
+  v: LOTTERY
+  x: IMMATURE
+  z: OK
+last_index: 5
