@@ -10,6 +10,7 @@ from PyQt5.QtCore import Qt, pyqtSignal
 from ..logger import get_logger
 from ..image_loader import ImageLoader
 from ..widgets import ThumbnailWidget
+from ..constants import WHITE_LIST
 
 # 獲取當前模組的 logger
 logger = get_logger('overview_window')
@@ -61,8 +62,14 @@ class OverviewWindow(QMainWindow):
             self.all_labels.remove("None")
             self.all_labels = ["None"] + self.all_labels
         
+        # 為特殊檢視準備兩個特殊標籤
+        self.special_labels = ["NOT IN WHITELIST", "WHITELIST"]
+        
         # 為每個標籤收集圖片，確保所有相關圖片都列出
         self.label_images = {label: [] for label in self.all_labels}
+        # 為特殊標籤也創建圖片容器
+        for label in self.special_labels:
+            self.label_images[label] = []
         
         # 查找所有圖片路徑，包括尚未在數據集中的圖片
         all_image_paths_set = set(all_image_paths)
@@ -78,9 +85,22 @@ class OverviewWindow(QMainWindow):
             if not labels_list:
                 self.label_images["None"].append(path)
             else:
+                # 處理標準標籤
                 for label in labels_list:
                     if label in self.all_labels:
                         self.label_images[label].append(path)
+                
+                # 處理白名單特殊分類
+                if any(label in WHITE_LIST for label in labels_list):
+                    self.label_images["WHITELIST"].append(path)
+                elif labels_list:  # 確保有標籤且都不在白名單中
+                    no_whitelist = True
+                    for label in labels_list:
+                        if label in WHITE_LIST:
+                            no_whitelist = False
+                            break
+                    if no_whitelist:
+                        self.label_images["NOT IN WHITELIST"].append(path)
         
         # 計算每個標籤的圖片數量
         self.label_counts = {label: len(imgs) for label, imgs in self.label_images.items()}
@@ -199,13 +219,18 @@ class OverviewWindow(QMainWindow):
         current_images = []
         
         if self.current_view_index == 0:
-            # 全部標籤模式
+            # 全部標籤模式，只包含標準標籤
             for label in self.all_labels:
                 current_images.extend(self.label_images[label])
         else:
             # 特定標籤模式
             if self.current_view_index <= len(self.all_labels):
                 label = self.all_labels[self.current_view_index - 1]
+                current_images.extend(self.label_images[label])
+            elif self.current_view_index <= len(self.all_labels) + len(self.special_labels):
+                # 特殊標籤索引
+                special_idx = self.current_view_index - len(self.all_labels) - 1
+                label = self.special_labels[special_idx]
                 current_images.extend(self.label_images[label])
         
         return current_images
@@ -245,7 +270,8 @@ class OverviewWindow(QMainWindow):
     
     def next_view(self):
         """切換到下一個檢視索引"""
-        if self.current_view_index < len(self.all_labels):
+        max_index = len(self.all_labels) + len(self.special_labels)
+        if self.current_view_index < max_index:
             self.current_view_index += 1
             self.update_view()
             self.scroll_area.verticalScrollBar().setValue(0)  # 回到頂部
@@ -272,6 +298,12 @@ class OverviewWindow(QMainWindow):
                 # 顯示特定標籤
                 if self.current_view_index <= len(self.all_labels):
                     label = self.all_labels[self.current_view_index - 1]
+                    self.index_label.setText(f"目前檢視: {label}")
+                    self.display_specific_label(label)
+                elif self.current_view_index <= len(self.all_labels) + len(self.special_labels):
+                    # 特殊標籤索引
+                    special_idx = self.current_view_index - len(self.all_labels) - 1
+                    label = self.special_labels[special_idx]
                     self.index_label.setText(f"目前檢視: {label}")
                     self.display_specific_label(label)
                 else:
@@ -358,6 +390,35 @@ class OverviewWindow(QMainWindow):
         
         # 顯示該標籤下的所有圖片，以10張一行的方式排列
         label_imgs = self.label_images[label]
+        
+        # 如果是特殊標籤，確保數據是最新的
+        if label in ["NOT IN WHITELIST", "WHITELIST"]:
+            # 清空當前標籤的圖片列表
+            self.label_images[label] = []
+            
+            # 重新計算符合條件的圖片
+            for path, labels_list in self.data['dataset'].items():
+                if not labels_list:
+                    continue
+                
+                if label == "WHITELIST" and any(l in WHITE_LIST for l in labels_list):
+                    self.label_images[label].append(path)
+                elif label == "NOT IN WHITELIST" and labels_list:
+                    no_whitelist = True
+                    for l in labels_list:
+                        if l in WHITE_LIST:
+                            no_whitelist = False
+                            break
+                    if no_whitelist:
+                        self.label_images[label].append(path)
+            
+            # 更新數量
+            self.label_counts[label] = len(self.label_images[label])
+            # 更新標題顯示
+            header.setText(f"{label} ({self.label_counts[label]})")
+            # 更新圖片列表
+            label_imgs = self.label_images[label]
+        
         if label_imgs:
             for i, img_path in enumerate(label_imgs):
                 row = (i // 10) + 1  # 每行10張，第一行是標題
@@ -419,6 +480,9 @@ class OverviewWindow(QMainWindow):
         """刷新數據並更新顯示"""
         # 重新計算標籤分類
         self.label_images = {label: [] for label in self.all_labels}
+        # 重置特殊標籤的圖片列表
+        for label in self.special_labels:
+            self.label_images[label] = []
         
         # 查找所有圖片路徑，包括尚未在數據集中的圖片
         all_image_paths_set = set(self.all_image_paths)
@@ -434,9 +498,22 @@ class OverviewWindow(QMainWindow):
             if not labels_list:
                 self.label_images["None"].append(path)
             else:
+                # 處理標準標籤
                 for label in labels_list:
                     if label in self.all_labels:
                         self.label_images[label].append(path)
+                
+                # 處理白名單特殊分類
+                if any(label in WHITE_LIST for label in labels_list):
+                    self.label_images["WHITELIST"].append(path)
+                elif labels_list:  # 確保有標籤且都不在白名單中
+                    no_whitelist = True
+                    for label in labels_list:
+                        if label in WHITE_LIST:
+                            no_whitelist = False
+                            break
+                    if no_whitelist:
+                        self.label_images["NOT IN WHITELIST"].append(path)
         
         # 更新標籤數量
         self.label_counts = {label: len(imgs) for label, imgs in self.label_images.items()}
