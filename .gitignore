@@ -1,6 +1,7 @@
 .cursor
 .old
 .vscode
+.venv
 logs/
 
 dataset/coffee_bean_dataset*/

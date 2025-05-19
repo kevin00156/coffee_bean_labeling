@@ -13,7 +13,7 @@
 ## 安裝依賴
 
 ```bash
-pip install PyQt5 numpy Pillow pyyaml
+pip install -r requirements.txt 
 ```
 
 ## 運行程式

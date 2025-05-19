@@ -1,0 +1,12 @@
+[project]
+name = "coffee-bean-labeling"
+version = "0.1.0"
+description = "這是用來標記咖啡豆的軟體，以PyQT實作"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "PyQt5",
+    "numpy",
+    "tqdm",
+    "pillow",
+]
