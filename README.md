@@ -10,10 +10,15 @@
 ## 標註前注意：
 請先查看dataset/README.md文件，以確定標註標準
 
-## 安裝依賴
-
+## 安裝依賴與環境
+如果你使用的是傳統環境或conda環境，使用以下命令
 ```bash
-pip install -r requirements.txt 
+pip install -e . 
+```
+**推薦**使用uv管理專案  
+```bash
+uv venv
+uv pip install -e .
 ```
 
 ## 運行程式
