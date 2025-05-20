@@ -553,42 +553,16 @@ class CoffeeBeanLabeler(QMainWindow):
 
     def show_overview(self):
         """顯示總覽模式"""
-        logger.info("開啟總覽模式")
+        logger.info("打開總覽模式")
         
-        # 檢查是否已經有總覽視窗在加載中
-        overview_window = OverviewWindow._instance
-        
-        # 使用 LoadingDialog 類的新功能檢查是否已有加載對話框打開
-        if LoadingDialog.is_dialog_open():
-            logger.warning("已有加載對話框打開，請等待完成")
-            QMessageBox.information(self, "請稍候", "正在處理中，請等待當前操作完成")
-            return
-        
-        # 如果已經有視窗正在加載中，不允許重複操作
-        if overview_window is not None and hasattr(overview_window, 'loader_thread') and overview_window.loader_thread.isRunning():
-            logger.warning("總覽視窗正在加載圖片，請等待完成")
-            QMessageBox.information(self, "請稍候", "總覽視窗正在加載圖片，請等待完成後再操作")
-            
-            # 如果視窗已經存在但被最小化或隱藏，則重新顯示它
-            if overview_window.isMinimized():
-                overview_window.showNormal()
-            if not overview_window.isVisible():
-                overview_window.show()
-            overview_window.activateWindow()  # 將視窗帶到前台
-            return
-            
-        # 如果總覽視窗已經存在且可見，則直接激活它而不是重新創建
-        if overview_window is not None and overview_window.isVisible():
-            logger.info("總覽視窗已經開啟，激活現有視窗")
-            overview_window.activateWindow()  # 將視窗帶到前台
-            overview_window.raise_()  # 確保視窗在最前面
-            return
-        
-        # 先創建並顯示加載對話框
+        # 先建立載入對話框
         loading_dialog = LoadingDialog(parent=self)
-        loading_dialog.setWindowTitle("加載圖片中")
-        loading_dialog.setWindowModality(Qt.WindowModal)  # 模態對話框，阻止與其他窗口的交互
+        loading_dialog.setModal(True)  # 確保對話框為模態，阻止用戶操作主窗口
+        loading_dialog.update_progress(0, 1)  # 初始化進度
         loading_dialog.show()
+        
+        # 強制處理事件，確保對話框顯示
+        QApplication.processEvents()
         
         # 創建或獲取總覽視窗單例但不立即顯示
         try:
@@ -598,21 +572,31 @@ class CoffeeBeanLabeler(QMainWindow):
             # 不需要儲存實例引用，因為 OverviewWindow 已經是單例
             overview_window = OverviewWindow(self.image_paths, self.data, self)
             
-            # 確保信號只連接一次
+            # 確保信號只連接一次 - 這是修復第一次點擊問題的關鍵
             try:
-                overview_window.view_image.disconnect(self.on_view_image_from_overview)
+                # 嘗試先斷開，避免多次連接
+                overview_window.view_image.disconnect()
             except:
-                pass  # 如果未連接，則忽略錯誤
+                logger.debug("信號未連接，準備進行首次連接")
+            
+            # 重新連接信號
             overview_window.view_image.connect(self.on_view_image_from_overview)
+            logger.debug("總覽視窗信號已成功連接")
             
             # 連接進度更新信號
-            if hasattr(overview_window, 'loader_thread'):
-                # 將進度更新連接到對話框
+            if hasattr(overview_window, 'loader_thread') and overview_window.loader_thread:
+                # 確保所有信號連接正確
                 try:
                     overview_window.loader_thread.progress_updated.disconnect()
                 except:
-                    pass  # 如果未連接，則忽略錯誤
+                    pass
+                    
+                try:
+                    overview_window.loader_thread.loading_finished.disconnect()
+                except:
+                    pass
                 
+                # 連接進度信號
                 overview_window.loader_thread.progress_updated.connect(
                     lambda current, total: loading_dialog.update_progress(current, total)
                 )
@@ -623,11 +607,6 @@ class CoffeeBeanLabeler(QMainWindow):
                 )
                 
                 # 當載入完成時，關閉對話框並顯示總覽視窗
-                try:
-                    overview_window.loader_thread.loading_finished.disconnect()
-                except:
-                    pass  # 如果未連接，則忽略錯誤
-                    
                 overview_window.loader_thread.loading_finished.connect(
                     lambda: self._show_overview_window(loading_dialog, overview_window)
                 )
@@ -635,6 +614,7 @@ class CoffeeBeanLabeler(QMainWindow):
                 # 如果沒有載入線程，直接顯示總覽視窗
                 loading_dialog.close()
                 overview_window.show()
+                overview_window.activateWindow()  # 確保視窗在前台
         except Exception as e:
             logger.error(f"創建總覽視窗時出錯: {e}")
             loading_dialog.close()
@@ -668,7 +648,15 @@ class CoffeeBeanLabeler(QMainWindow):
     
     def on_view_image_from_overview(self, img_path):
         """從總覽模式選擇圖片進行標記"""
+        # 增加日誌以協助調試
         logger.info(f"從總覽模式選擇圖片: {img_path}")
+        
+        # 確保路徑有效
+        if not img_path or not os.path.exists(img_path):
+            logger.error(f"圖片路徑無效: {img_path}")
+            QMessageBox.warning(self, "警告", f"無法找到圖片: {img_path}")
+            return
+            
         # 創建或獲取標記視窗單例
         labeling_window = LabelingWindow(img_path, self.data, self.labels, self.image_paths, self.current_index, self)
         
@@ -676,8 +664,14 @@ class CoffeeBeanLabeler(QMainWindow):
         try:
             labeling_window.labels_changed.disconnect(self.on_labels_changed)
         except:
-            pass  # 如果未連接，則忽略錯誤
+            logger.debug("標記視窗信號未連接，準備進行首次連接")
+            
+        # 重新連接信號
         labeling_window.labels_changed.connect(self.on_labels_changed)
+        
+        # 顯示標記視窗
+        labeling_window.show()
+        labeling_window.activateWindow()  # 確保視窗在前台
     
     def on_labels_changed(self, img_path, new_labels):
         """標籤變更時更新總覽視窗"""
