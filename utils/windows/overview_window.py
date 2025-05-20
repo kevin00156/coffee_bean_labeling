@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (QMainWindow, QLabel, QVBoxLayout,
                             QHBoxLayout, QWidget, QGridLayout, QScrollArea,
                             QPushButton, QApplication)
 from PyQt5.QtGui import QPixmap, QImage
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 
 from ..logger import get_logger
 from ..image_loader import ImageLoader
@@ -19,6 +19,19 @@ class OverviewWindow(QMainWindow):
     """總覽視窗類，用於顯示所有圖片的標籤總覽"""
     view_image = pyqtSignal(str)  # 發射被選中查看的圖片路徑
     
+    # 單例模式實現
+    _instance = None
+    _init_done = False
+    
+    def __new__(cls, *args, **kwargs):
+        """確保只創建一個實例"""
+        if cls._instance is None:
+            logger.debug("創建 OverviewWindow 單例")
+            cls._instance = super(OverviewWindow, cls).__new__(cls)
+        else:
+            logger.debug("返回現有 OverviewWindow 單例")
+        return cls._instance
+    
     def __init__(self, all_image_paths, data, parent=None):
         """
         初始化總覽視窗
@@ -28,6 +41,11 @@ class OverviewWindow(QMainWindow):
             data (dict): 數據集字典
             parent (QWidget, optional): 父窗口
         """
+        # 如果已經初始化過，則跳過
+        if self._init_done:
+            self.update_data(all_image_paths, data)
+            return
+            
         super().__init__(parent)
         self.all_image_paths = all_image_paths
         self.data = data
@@ -157,7 +175,74 @@ class OverviewWindow(QMainWindow):
         # 啟動圖片預載入線程
         self.start_image_loader()
         
+        self._init_done = True
         logger.debug("總覽視窗已初始化")
+    
+    def update_data(self, all_image_paths, data):
+        """
+        更新數據，當單例已存在時使用此方法刷新數據
+        
+        Parameters:
+            all_image_paths (list): 所有圖片路徑列表
+            data (dict): 數據集字典
+        """
+        logger.debug("更新總覽視窗數據")
+        self.all_image_paths = all_image_paths
+        self.data = data
+        
+        # 重新計算標籤分類
+        self.all_labels = set()
+        for labels_list in data['dataset'].values():
+            if not labels_list:
+                self.all_labels.add("None")
+            else:
+                self.all_labels.update(labels_list)
+        
+        self.all_labels.add("None")  # 確保有無標籤類別
+        
+        # 轉換為排序列表，None放在最前
+        self.all_labels = sorted(list(self.all_labels))
+        if "None" in self.all_labels:
+            self.all_labels.remove("None")
+            self.all_labels = ["None"] + self.all_labels
+        
+        # 更新圖片分類
+        self.label_images = {label: [] for label in self.all_labels}
+        for label in self.special_labels:
+            self.label_images[label] = []
+        
+        # 重新處理圖片分類
+        all_image_paths_set = set(all_image_paths)
+        dataset_paths_set = set(data['dataset'].keys())
+        
+        unlabeled_paths = all_image_paths_set - dataset_paths_set
+        for path in unlabeled_paths:
+            self.label_images["None"].append(path)
+        
+        for path, labels_list in data['dataset'].items():
+            if not labels_list:
+                self.label_images["None"].append(path)
+            else:
+                for label in labels_list:
+                    if label in self.all_labels:
+                        self.label_images[label].append(path)
+                
+                if any(label in WHITE_LIST for label in labels_list):
+                    self.label_images["WHITELIST"].append(path)
+                elif labels_list:
+                    no_whitelist = True
+                    for label in labels_list:
+                        if label in WHITE_LIST:
+                            no_whitelist = False
+                            break
+                    if no_whitelist:
+                        self.label_images["NOT IN WHITELIST"].append(path)
+        
+        # 更新計數
+        self.label_counts = {label: len(imgs) for label, imgs in self.label_images.items()}
+        
+        # 更新顯示
+        self.update_view()
     
     def setup_shortcuts(self):
         """設置鍵盤快捷鍵"""
@@ -202,8 +287,21 @@ class OverviewWindow(QMainWindow):
             
             # 創建新線程
             self.loader_thread = ImageLoader(all_paths, priority_paths)
+            
+            # 先斷開所有可能的舊連接
+            try:
+                self.loader_thread.image_loaded.disconnect()
+                self.loader_thread.progress_updated.disconnect()
+                self.loader_thread.loading_finished.disconnect()
+            except:
+                pass  # 忽略未連接的錯誤
+            
+            # 重新連接信號
             self.loader_thread.image_loaded.connect(self.on_image_loaded)
             self.loader_thread.progress_updated.connect(self.on_progress_updated)
+            self.loader_thread.loading_finished.connect(self.on_loading_finished)
+            
+            # 啟動線程
             self.loader_thread.start()
             
             # 更新狀態欄
@@ -213,6 +311,25 @@ class OverviewWindow(QMainWindow):
         except Exception as e:
             logger.error(f"啟動圖片載入線程時出錯: {e}")
             self.statusBar().showMessage(f"圖片載入失敗: {e}")
+    
+    def on_loading_finished(self):
+        """當所有圖片加載完成時調用"""
+        logger.info("圖片加載完成")
+        self.statusBar().showMessage("所有圖片加載完成")
+        
+        # 這裡可以添加完成後的其他處理
+        from PyQt5.QtWidgets import QApplication
+        QApplication.processEvents()  # 確保界面更新
+    
+    def on_progress_updated(self, loaded, total):
+        """當載入進度更新時調用"""
+        self.progress_label.setText(f"載入進度: {loaded}/{total}")
+        self.statusBar().showMessage(f"載入進度: {loaded}/{total} 張圖片")
+        logger.debug(f"圖片載入進度: {loaded}/{total}")
+        
+        # 處理事件循環，確保界面響應
+        from PyQt5.QtWidgets import QApplication
+        QApplication.processEvents()
     
     def get_current_view_images(self):
         """獲取當前視圖的所有圖片路徑列表"""
@@ -255,11 +372,6 @@ class OverviewWindow(QMainWindow):
         except Exception as e:
             logger.error(f"處理已載入圖片時發生錯誤: {e}")
     
-    def on_progress_updated(self, loaded, total):
-        """當載入進度更新時調用"""
-        self.progress_label.setText(f"載入進度: {loaded}/{total}")
-        logger.debug(f"圖片載入進度: {loaded}/{total}")
-    
     def previous_view(self):
         """切換到上一個檢視索引"""
         if self.current_view_index > 0:
@@ -287,42 +399,67 @@ class OverviewWindow(QMainWindow):
         try:
             self.is_updating = True
             
+            # 保存當前滾動條位置
+            scroll_position = self.scroll_area.verticalScrollBar().value()
+            logger.debug(f"update_view 保存滾動條位置: {scroll_position}")
+            
+            # 處理事件，確保界面響應
+            from PyQt5.QtWidgets import QApplication
+            QApplication.processEvents()
+            
             # 清空現有網格
             self.clear_grid()
             
+            # 更新界面標題
             if self.current_view_index == 0:
                 # 顯示所有標籤
                 self.index_label.setText("目前檢視: 全部標籤")
+                # 先更新界面再繼續處理
+                QApplication.processEvents()
                 self.display_all_labels()
             else:
                 # 顯示特定標籤
                 if self.current_view_index <= len(self.all_labels):
                     label = self.all_labels[self.current_view_index - 1]
                     self.index_label.setText(f"目前檢視: {label}")
+                    QApplication.processEvents()
                     self.display_specific_label(label)
                 elif self.current_view_index <= len(self.all_labels) + len(self.special_labels):
                     # 特殊標籤索引
                     special_idx = self.current_view_index - len(self.all_labels) - 1
                     label = self.special_labels[special_idx]
                     self.index_label.setText(f"目前檢視: {label}")
+                    QApplication.processEvents()
                     self.display_specific_label(label)
                 else:
                     # 索引超出範圍，重置
                     self.current_view_index = 0
                     self.index_label.setText("目前檢視: 全部標籤")
+                    QApplication.processEvents()
                     self.display_all_labels()
+            
+            # 確保界面更新
+            QApplication.processEvents()
             
             # 更新優先載入的圖片
             if hasattr(self, 'loader_thread') and self.loader_thread.isRunning():
                 # 先停止當前線程
                 try:
                     self.loader_thread.stop()
-                    self.loader_thread.wait(100)  # 等待100毫秒讓線程結束
-                except:
-                    pass
+                    self.loader_thread.wait(200)  # 給予足夠時間讓線程停止
                     
-                # 啟動新的線程
-                self.start_image_loader()
+                    # 如果線程仍在運行且無法停止，則強制終止
+                    if self.loader_thread.isRunning():
+                        logger.warning("載入線程無法停止，強制終止")
+                        self.loader_thread.terminate()
+                except Exception as e:
+                    logger.error(f"停止載入線程出錯: {e}")
+                    
+            # 啟動新的線程
+            self.start_image_loader()
+            
+            # 恢復滾動條位置
+            QTimer.singleShot(50, lambda: self.restore_scroll_position(scroll_position))
             
             logger.debug(f"視圖已更新: 索引={self.current_view_index}")
             
@@ -333,11 +470,21 @@ class OverviewWindow(QMainWindow):
     
     def clear_grid(self):
         """清空網格佈局"""
+        # 處理事件，確保界面響應
+        from PyQt5.QtWidgets import QApplication
+        
+        # 使用取出計數來分批處理
+        count = 0
         while self.grid_layout.count():
             item = self.grid_layout.takeAt(0)
             widget = item.widget()
             if widget:
                 widget.setParent(None)
+                
+            # 每清除10個項目處理一次事件
+            count += 1
+            if count % 10 == 0:
+                QApplication.processEvents()
         
         # 重置縮略圖小部件緩存，僅保留已建立的小部件
         self.thumbnail_widgets = {path: widget for path, widget in self.thumbnail_widgets.items() 
@@ -347,8 +494,18 @@ class OverviewWindow(QMainWindow):
     
     def display_all_labels(self):
         """顯示所有標籤的縮略圖，確保每列連續顯示，不留空白"""
+        # 處理事件，確保界面響應
+        from PyQt5.QtWidgets import QApplication
+        QApplication.processEvents()
+        
         # 顯示所有標籤，每個標籤一列
         visible_labels = self.all_labels
+        
+        # 限制顯示的標籤數量，避免過多標籤導致卡頓
+        MAX_LABELS = 20  # 最多顯示20個標籤
+        if len(visible_labels) > MAX_LABELS:
+            logger.warning(f"標籤數量過多 ({len(visible_labels)}), 僅顯示前 {MAX_LABELS} 個")
+            visible_labels = visible_labels[:MAX_LABELS]
         
         # 添加標籤標題（包含數量）
         for col, label in enumerate(visible_labels):
@@ -356,32 +513,71 @@ class OverviewWindow(QMainWindow):
             header.setAlignment(Qt.AlignCenter)
             header.setStyleSheet("font-weight: bold; font-size: 14px; background-color: #f0f0f0;")
             self.grid_layout.addWidget(header, 0, col)
+            
+            # 每添加5個標籤處理一次事件
+            if (col + 1) % 5 == 0:
+                QApplication.processEvents()
         
         # 為每列圖片設置單獨的行計數器，確保圖片連續顯示
         row_counters = {label: 1 for label in visible_labels}  # 從1開始，因為第0行是標題
         
         # 顯示每個標籤下的所有圖片
+        total_thumbnails = 0
+        max_thumbnails_per_label = 20  # 每個標籤最多顯示20張圖片
+        
         for col, label in enumerate(visible_labels):
             label_imgs = self.label_images[label]
-            if label_imgs:  # 確保這個標籤有圖片
+            
+            # 限制每個標籤顯示的圖片數量
+            if len(label_imgs) > max_thumbnails_per_label:
+                # 如果圖片太多，取最前面的部分
+                display_imgs = label_imgs[:max_thumbnails_per_label]
+                logger.debug(f"標籤 {label} 有 {len(label_imgs)} 張圖片，僅顯示前 {max_thumbnails_per_label} 張")
+            else:
+                display_imgs = label_imgs
+            
+            if display_imgs:  # 確保這個標籤有圖片
                 # 連續顯示該標籤的所有圖片，從row=1開始（標題下方）
-                for img_path in label_imgs:
+                for i, img_path in enumerate(display_imgs):
                     self.add_thumbnail(img_path, row_counters[label], col)
                     row_counters[label] += 1  # 遞增該列的行計數器
+                    
+                    # 計算已添加的縮略圖總數
+                    total_thumbnails += 1
+                    
+                    # 每添加20個縮略圖處理一次事件，保持界面響應
+                    if total_thumbnails % 20 == 0:
+                        QApplication.processEvents()
+                        
+                        # 如果已處理了足夠多的縮略圖，顯示提示並退出循環
+                        if total_thumbnails >= 200:  # 限制總數，防止過多圖片導致卡頓
+                            logger.warning(f"縮略圖過多，顯示前 {total_thumbnails} 張")
+                            break
             else:
                 # 如果沒有圖片，添加一個空標籤避免佈局問題
                 empty_label = QLabel("無圖片")
                 empty_label.setAlignment(Qt.AlignCenter)
                 self.grid_layout.addWidget(empty_label, 1, col)
+            
+            # 處理事件，確保界面響應
+            QApplication.processEvents()
+            
+            # 提前退出循環，避免處理過多標籤
+            if total_thumbnails >= 200:
+                break
         
         # 為每列設置相同的寬度
         for col in range(len(visible_labels)):
             self.grid_layout.setColumnStretch(col, 1)
             
-        logger.debug(f"顯示全部標籤模式: {len(visible_labels)} 個標籤")
+        logger.debug(f"顯示全部標籤模式: {len(visible_labels)} 個標籤, {total_thumbnails} 張縮略圖")
     
     def display_specific_label(self, label):
         """顯示特定標籤的縮略圖"""
+        # 處理事件，確保界面響應
+        from PyQt5.QtWidgets import QApplication
+        QApplication.processEvents()
+        
         # 添加標籤標題
         header = QLabel(f"{label} ({self.label_counts[label]})")
         header.setAlignment(Qt.AlignCenter)
@@ -418,12 +614,25 @@ class OverviewWindow(QMainWindow):
             header.setText(f"{label} ({self.label_counts[label]})")
             # 更新圖片列表
             label_imgs = self.label_images[label]
+            
+            # 處理事件，確保界面響應
+            QApplication.processEvents()
+        
+        # 限制顯示的圖片數量，避免過多圖片導致卡頓
+        MAX_IMAGES = 200  # 最多顯示200張圖片
+        if len(label_imgs) > MAX_IMAGES:
+            logger.warning(f"標籤 {label} 有 {len(label_imgs)} 張圖片，僅顯示前 {MAX_IMAGES} 張")
+            label_imgs = label_imgs[:MAX_IMAGES]
         
         if label_imgs:
             for i, img_path in enumerate(label_imgs):
                 row = (i // 10) + 1  # 每行10張，第一行是標題
                 col = i % 10
                 self.add_thumbnail(img_path, row, col)
+                
+                # 每添加20張圖片處理一次事件，保持界面響應
+                if (i + 1) % 20 == 0:
+                    QApplication.processEvents()
         else:
             # 沒有圖片時顯示提示
             empty_label = QLabel("此類別無圖片")
@@ -472,12 +681,107 @@ class OverviewWindow(QMainWindow):
     
     def update_thumbnail_label(self, img_path, new_labels):
         """更新縮略圖的標籤"""
+        # 更新內存數據
+        if img_path in self.data['dataset']:
+            self.data['dataset'][img_path] = new_labels
+        
+        # 更新縮略圖顯示
         if img_path in self.thumbnail_widgets and self.thumbnail_widgets[img_path] is not None:
             self.thumbnail_widgets[img_path].set_labels(new_labels)
             logger.debug(f"更新縮略圖標籤: {img_path} -> {new_labels}")
+            
+            # 智能更新標籤分類
+            self._update_label_classifications(img_path, new_labels)
+            
+            # 更新計數
+            self.label_counts = {label: len(imgs) for label, imgs in self.label_images.items()}
+            
+            # 如果當前視圖是特定標籤視圖，可能需要從視圖中移除這個縮略圖
+            if self.current_view_index > 0:
+                # 獲取當前標籤
+                current_label = None
+                if self.current_view_index <= len(self.all_labels):
+                    current_label = self.all_labels[self.current_view_index - 1]
+                elif self.current_view_index <= len(self.all_labels) + len(self.special_labels):
+                    special_idx = self.current_view_index - len(self.all_labels) - 1
+                    current_label = self.special_labels[special_idx]
+                
+                # 檢查是否需要從當前視圖中移除
+                if current_label and current_label not in ["All"]:
+                    if current_label == "None" and new_labels:
+                        # 如果當前是無標籤視圖，但現在有標籤了，需要從視圖中移除
+                        self.thumbnail_widgets[img_path].setVisible(False)
+                    elif current_label != "None" and current_label not in new_labels:
+                        # 如果當前是特定標籤視圖，但現在沒有這個標籤了，需要從視圖中移除
+                        self.thumbnail_widgets[img_path].setVisible(False)
+                    elif current_label == "WHITELIST" and not any(label in WHITE_LIST for label in new_labels):
+                        # 如果當前是白名單視圖，但現在沒有白名單標籤了，需要從視圖中移除
+                        self.thumbnail_widgets[img_path].setVisible(False)
+                    elif current_label == "NOT IN WHITELIST" and (not new_labels or any(label in WHITE_LIST for label in new_labels)):
+                        # 如果當前是非白名單視圖，但現在有白名單標籤或無標籤了，需要從視圖中移除
+                        self.thumbnail_widgets[img_path].setVisible(False)
+            
+            # 更新標題顯示的計數
+            self._update_header_counts()
+    
+    def _update_label_classifications(self, img_path, new_labels):
+        """更新圖片的標籤分類"""
+        # 先從所有標籤分類中移除此圖片
+        for label_imgs in self.label_images.values():
+            if img_path in label_imgs:
+                label_imgs.remove(img_path)
+        
+        # 根據新標籤重新分類
+        if not new_labels:
+            self.label_images["None"].append(img_path)
+        else:
+            for label in new_labels:
+                if label in self.all_labels:
+                    self.label_images[label].append(img_path)
+            
+            # 處理白名單特殊分類
+            if any(label in WHITE_LIST for label in new_labels):
+                self.label_images["WHITELIST"].append(img_path)
+            elif new_labels:  # 確保有標籤且都不在白名單中
+                no_whitelist = True
+                for label in new_labels:
+                    if label in WHITE_LIST:
+                        no_whitelist = False
+                        break
+                if no_whitelist:
+                    self.label_images["NOT IN WHITELIST"].append(img_path)
+    
+    def _update_header_counts(self):
+        """更新標題顯示的標籤計數"""
+        # 如果是全部標籤視圖，更新所有標籤標題
+        if self.current_view_index == 0:
+            # 更新每個標籤列的標題
+            for col in range(self.grid_layout.columnCount()):
+                header_item = self.grid_layout.itemAtPosition(0, col)
+                if header_item and header_item.widget():
+                    header = header_item.widget()
+                    if isinstance(header, QLabel):
+                        label_text = header.text().split(" (")[0]  # 獲取標籤名稱
+                        if label_text in self.label_counts:
+                            # 更新計數
+                            header.setText(f"{label_text} ({self.label_counts[label_text]})")
+        else:
+            # 如果是特定標籤視圖，只更新當前標籤的標題
+            header_item = self.grid_layout.itemAtPosition(0, 0)
+            if header_item and header_item.widget():
+                header = header_item.widget()
+                if isinstance(header, QLabel):
+                    label_text = header.text().split(" (")[0]  # 獲取標籤名稱
+                    if label_text in self.label_counts:
+                        # 更新計數
+                        header.setText(f"{label_text} ({self.label_counts[label_text]})")
     
     def refresh_data(self):
         """刷新數據並更新顯示"""
+        # 保存當前滾動條位置
+        scroll_position = self.scroll_area.verticalScrollBar().value()
+        logger.debug(f"保存滾動條位置: {scroll_position}")
+        
         # 重新計算標籤分類
         self.label_images = {label: [] for label in self.all_labels}
         # 重置特殊標籤的圖片列表
@@ -520,12 +824,40 @@ class OverviewWindow(QMainWindow):
         
         # 更新視圖
         self.update_view()
+        
+        # 恢復滾動條位置
+        # 使用 QTimer.singleShot 確保在 UI 完全更新後設置滾動位置
+        QTimer.singleShot(10, lambda: self.restore_scroll_position(scroll_position))
+        
         logger.info("數據已刷新，視圖已更新")
+    
+    def restore_scroll_position(self, position):
+        """恢復滾動條位置"""
+        if position > 0:
+            # 確保界面已經完全更新，然後恢復滾動位置
+            self.scroll_area.verticalScrollBar().setValue(position)
+            logger.debug(f"恢復滾動條位置: {position}")
     
     def closeEvent(self, event):
         """視窗關閉事件"""
         # 停止圖片載入線程
         if hasattr(self, 'loader_thread') and self.loader_thread.isRunning():
-            self.loader_thread.stop()
+            logger.debug("關閉視窗，停止載入線程")
+            try:
+                self.loader_thread.stop()
+                self.loader_thread.wait(500)  # 給足足夠的時間停止
+                
+                # 如果線程仍在運行，則強制結束
+                if self.loader_thread.isRunning():
+                    logger.warning("線程未能及時停止，強制終止")
+                    self.loader_thread.terminate()
+                    self.loader_thread.wait()
+            except Exception as e:
+                logger.error(f"停止載入線程時出錯: {e}")
+        
+        # 釋放資源
+        self.image_cache.clear()
+        self.thumbnail_widgets.clear()
+        
         event.accept()
         logger.debug("總覽視窗已關閉") 

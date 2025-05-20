@@ -18,6 +18,19 @@ class LabelingWindow(QMainWindow):
     labels_changed = pyqtSignal(str, list)  # 路徑和新標籤列表
     image_changed = pyqtSignal(str)  # 當切換到新圖片時發出信號
     
+    # 單例模式實現
+    _instance = None
+    _init_done = False
+    
+    def __new__(cls, *args, **kwargs):
+        """確保只創建一個實例"""
+        if cls._instance is None:
+            logger.debug("創建 LabelingWindow 單例")
+            cls._instance = super(LabelingWindow, cls).__new__(cls)
+        else:
+            logger.debug("返回現有 LabelingWindow 單例")
+        return cls._instance
+    
     def __init__(self, img_path, data, labels_dict, all_image_paths=None, current_index=None, parent=None):
         """
         初始化標記視窗
@@ -30,6 +43,11 @@ class LabelingWindow(QMainWindow):
             current_index (int, optional): 當前圖片索引
             parent (QWidget, optional): 父窗口
         """
+        # 如果已經初始化過，則只更新數據和圖片
+        if self._init_done:
+            self.update_image(img_path, data, labels_dict, all_image_paths, current_index)
+            return
+            
         super().__init__(parent)
         self.img_path = img_path
         self.data = data
@@ -116,7 +134,68 @@ class LabelingWindow(QMainWindow):
         # 設置鍵盤快捷鍵
         self.setup_shortcuts()
         
+        self._init_done = True
         logger.debug(f"標記視窗已初始化: {img_path}")
+    
+    def update_image(self, img_path, data, labels_dict, all_image_paths=None, current_index=None):
+        """
+        當單例視窗已存在時，更新圖片和相關數據
+        
+        Parameters:
+            img_path (str): 圖片路徑
+            data (dict): 數據集字典
+            labels_dict (dict): 標籤字典
+            all_image_paths (list, optional): 所有圖片路徑列表
+            current_index (int, optional): 當前圖片索引
+        """
+        logger.debug(f"更新標記視窗: {img_path}")
+        
+        # 先保存當前圖片的更改
+        if self.has_changes:
+            current_labels = self.data['dataset'].get(self.img_path, [])
+            self.labels_changed.emit(self.img_path, current_labels)
+            self.has_changes = False
+        
+        # 更新數據和路徑
+        self.img_path = img_path
+        self.data = data
+        self.labels_dict = labels_dict
+        
+        # 更新視窗標題
+        self.setWindowTitle(f"標記視窗 - {os.path.basename(img_path)}")
+        
+        # 更新路徑列表和索引
+        if all_image_paths:
+            self.all_image_paths = all_image_paths
+        
+        if self.all_image_paths and img_path in self.all_image_paths:
+            self.current_index = self.all_image_paths.index(img_path)
+        elif current_index is not None:
+            self.current_index = current_index
+        
+        # 顯示視窗如果它是隱藏的
+        if not self.isVisible():
+            self.show()
+        else:
+            self.activateWindow()  # 如果視窗已存在，確保它在前台
+        
+        # 加載新圖片
+        try:
+            self.original_image = Image.open(img_path)
+            self.update_image_display()
+        except Exception as e:
+            logger.error(f"無法載入圖片: {e}")
+            self.image_label.setText(f"無法載入圖片: {e}")
+        
+        # 更新按鈕狀態
+        for label, btn in self.label_buttons.items():
+            if img_path in self.data['dataset'] and label in self.data['dataset'][img_path]:
+                btn.setStyleSheet("background-color: #a3c2c2;")
+            else:
+                btn.setStyleSheet("")
+        
+        # 更新標籤顯示
+        self.update_label_display()
     
     def update_image_display(self):
         """根據視窗大小更新圖片顯示"""

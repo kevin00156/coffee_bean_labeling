@@ -1,267 +1,143 @@
 import os
 import time
-import tempfile
+import threading
+from PyQt5.QtCore import QThread, pyqtSignal, QObject
+from PyQt5.QtGui import QImage
 from PIL import Image
-from PyQt5.QtGui import QImage, QColor, QPainter, QFont
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QRect
 import numpy as np
 
 from .logger import get_logger
-from .constants import THUMBNAIL_SIZE
 
 # 獲取當前模組的 logger
 logger = get_logger('image_loader')
 
 class ImageLoader(QThread):
-    """圖片載入器線程類，用於異步載入多張圖片"""
-    image_loaded = pyqtSignal(str, QImage)  # 當圖片載入完成時發出信號
-    progress_updated = pyqtSignal(int, int)  # 進度更新信號
-    loading_finished = pyqtSignal()  # 當所有圖片載入完成時發出信號
+    """圖片加載線程，用於後台載入和處理圖片"""
+    image_loaded = pyqtSignal(str, object)  # 圖片路徑和 QImage 對象
+    progress_updated = pyqtSignal(int, int)  # 當前進度和總數
+    loading_finished = pyqtSignal()  # 加載完成信號
     
-    def __init__(self, image_paths, priority_paths=None):
+    def __init__(self, all_paths, priority_paths=None):
         """
-        初始化圖片載入器
+        初始化圖片加載線程
         
         Parameters:
-            image_paths (list): 要載入的所有圖片路徑
-            priority_paths (list, optional): 優先載入的圖片路徑
+            all_paths (list): 所有需要加載的圖片路徑
+            priority_paths (list, optional): 優先加載的圖片路徑
         """
         super().__init__()
-        self.image_paths = image_paths
+        self.all_paths = all_paths
         self.priority_paths = priority_paths or []
-        self.running = True
-        self.max_retries = 2  # 每張圖片的最大重試次數
-        logger.debug(f"初始化圖片載入器，共 {len(image_paths)} 張圖片，{len(self.priority_paths)} 張優先圖片")
-    
-    def run(self):
-        """執行圖片載入任務"""
-        logger.info("開始載入圖片...")
-        total_images = len(self.image_paths)
-        loaded_count = 0
-        failed_paths = []  # 用於記錄載入失敗的圖片
+        self._stop_requested = threading.Event()
+        self.cache = {}  # 線程內部緩存
         
-        # 先處理優先級路徑
-        if self.priority_paths:
-            logger.info(f"處理 {len(self.priority_paths)} 張優先圖片")
-            for path in self.priority_paths:
-                if not self.running:
-                    logger.info("圖片載入器被停止")
-                    return
-                    
-                if path in self.image_paths:
-                    success = self.load_single_image(path)
-                    if success:
-                        loaded_count += 1
-                    else:
-                        failed_paths.append(path)
-                    
-                    if loaded_count % 10 == 0:
-                        self.progress_updated.emit(loaded_count, total_images)
+        # 使用較低的線程優先級，以避免阻塞主線程
+        self.setPriority(QThread.LowPriority)
         
-        # 處理其餘路徑
-        logger.info("處理其餘圖片")
-        for path in self.image_paths:
-            if not self.running:
-                logger.info("圖片載入器被停止")
-                return
-                
-            if path not in self.priority_paths:
-                success = self.load_single_image(path)
-                if success:
-                    loaded_count += 1
-                else:
-                    failed_paths.append(path)
-                
-                if loaded_count % 10 == 0:
-                    self.progress_updated.emit(loaded_count, total_images)
-                    
-                # 短暫休眠，避免佔用太多資源
-                time.sleep(0.01)
-        
-        # 重試載入失敗的圖片
-        if failed_paths and self.running:
-            logger.warning(f"嘗試重新載入 {len(failed_paths)} 張失敗的圖片...")
-            for retry in range(self.max_retries):
-                if not self.running:
-                    break
-                
-                still_failed = []
-                for path in failed_paths:
-                    if self.load_single_image(path, is_retry=True):
-                        loaded_count += 1
-                    else:
-                        still_failed.append(path)
-                
-                failed_paths = still_failed
-                if not failed_paths:
-                    break
-                
-                # 等待短暫時間後重試
-                time.sleep(0.5)
-            
-            if failed_paths:
-                logger.error(f"有 {len(failed_paths)} 張圖片載入失敗，創建佔位符圖像")
-                # 為最終失敗的圖片創建佔位符圖像
-                for path in failed_paths:
-                    self.create_placeholder_image(path)
-        
-        self.progress_updated.emit(loaded_count, total_images)
-        logger.info(f"圖片載入完成，成功載入 {loaded_count}/{total_images} 張圖片")
-        self.loading_finished.emit()  # 發出加載完成信號
-    
-    def load_single_image(self, path, is_retry=False):
-        """
-        載入單張圖片
-        
-        Parameters:
-            path (str): 圖片路徑
-            is_retry (bool, optional): 是否為重試載入
-            
-        Returns:
-            bool: 是否成功載入
-        """
-        try:
-            if not is_retry:
-                logger.debug(f"載入圖片: {path}")
-                
-            # 使用更健壯的圖片載入方式
-            img = Image.open(path)
-            
-            # 確保圖片模式正確
-            if img.mode not in ["RGB", "RGBA"]:
-                img = img.convert("RGB")
-                
-            # 如果圖片尺寸過大，先調整到合理大小再縮放為縮略圖
-            if max(img.size) > 2000:  # 如果圖片任一邊超過2000像素
-                # 計算縮放比例，減小到合理大小
-                scale = 2000 / max(img.size)
-                new_size = (int(img.size[0] * scale), int(img.size[1] * scale))
-                img = img.resize(new_size, Image.LANCZOS)
-            
-            # 創建縮略圖
-            img.thumbnail(THUMBNAIL_SIZE)
-            
-            # 在轉換前確保圖片數據是有效的
-            img.load()
-            
-            # 轉換為QImage，使用增強的轉換方法
-            qimg = self.enhanced_pil_to_qimage(img)
-            
-            # 檢查轉換後的QImage是否有效
-            if qimg and not qimg.isNull():
-                self.image_loaded.emit(path, qimg)
-                return True
-            else:
-                if not is_retry:
-                    logger.warning(f"轉換後的QImage無效: {path}")
-                return False
-                
-        except Exception as e:
-            if not is_retry:
-                logger.error(f"載入圖片失敗 {path}: {e}")
-            return False
-    
-    def create_placeholder_image(self, path):
-        """
-        為載入失敗的圖片創建佔位符圖像
-        
-        Parameters:
-            path (str): 圖片路徑
-        """
-        try:
-            logger.debug(f"為 {path} 創建佔位符圖像")
-            # 建立一個警告色的錯誤圖示
-            error_img = QImage(THUMBNAIL_SIZE[0], THUMBNAIL_SIZE[1], QImage.Format_RGB888)
-            error_img.fill(QColor(255, 200, 0))  # 警告黃色，比紅色更容易辨識
-            
-            # 在圖像上繪製錯誤標記
-            painter = QPainter(error_img)
-            painter.setPen(QColor(0, 0, 0))
-            painter.setFont(QFont("Arial", 10))
-            painter.drawText(QRect(10, 10, THUMBNAIL_SIZE[0]-20, THUMBNAIL_SIZE[1]-20), 
-                             Qt.AlignCenter, "載入錯誤")
-            painter.end()
-            
-            self.image_loaded.emit(path, error_img)
-        except Exception as e:
-            logger.error(f"創建佔位符圖像失敗: {e}")
+        logger.debug(f"初始化圖片加載線程: {len(all_paths)} 張圖片，{len(priority_paths or [])} 張優先")
     
     def stop(self):
-        """停止載入線程"""
-        logger.info("停止圖片載入器...")
-        self.running = False
-        self.wait()
-        logger.debug("圖片載入器已停止")
+        """請求停止線程"""
+        self._stop_requested.set()
+        logger.debug("請求停止加載線程")
+    
+    def run(self):
+        """運行線程"""
+        # 重置停止標誌
+        self._stop_requested.clear()
+        
+        try:
+            # 首先處理優先路徑
+            priority_set = set(self.priority_paths)
+            paths_to_load = list(self.priority_paths)  # 複製優先列表
+            
+            # 添加其餘路徑
+            for path in self.all_paths:
+                if path not in priority_set:
+                    paths_to_load.append(path)
+            
+            total = len(paths_to_load)
+            loaded = 0
+            
+            # 發送初始進度信號
+            self.progress_updated.emit(loaded, total)
+            
+            # 開始加載
+            for path in paths_to_load:
+                # 檢查是否請求停止
+                if self._stop_requested.is_set():
+                    logger.info("加載線程收到停止請求")
+                    break
+                
+                try:
+                    # 延遲以避免佔用過多CPU
+                    self.msleep(1)  # 使用QThread的毫秒睡眠，更精確
+                    
+                    # 檢查路徑有效性
+                    if not path or not os.path.exists(path):
+                        logger.warning(f"圖片路徑無效: {path}")
+                        continue
+                    
+                    # 使用PIL加載圖片
+                    img = Image.open(path)
+                    # 縮小尺寸以減少內存使用
+                    img.thumbnail((800, 800), Image.LANCZOS)
+                    
+                    # 轉換為QImage
+                    qimage = self.pil_to_qimage(img)
+                    
+                    # 發射信號
+                    self.image_loaded.emit(path, qimage)
+                    
+                    # 更新進度
+                    loaded += 1
+                    if loaded % 5 == 0 or loaded == total:  # 每5張或最後一張時更新進度
+                        self.progress_updated.emit(loaded, total)
+                    
+                except Exception as e:
+                    logger.error(f"載入圖片時出錯 {path}: {e}")
+                
+                # 釋放資源，避免內存洩漏
+                img = None
+                qimage = None
+            
+            # 加載完成
+            logger.info(f"圖片加載完成: {loaded}/{total}")
+            self.loading_finished.emit()
+            
+        except Exception as e:
+            logger.error(f"圖片加載線程出錯: {e}")
+            self.loading_finished.emit()  # 即使出錯也發送完成信號
     
     @staticmethod
-    def enhanced_pil_to_qimage(pil_img):
+    def pil_to_qimage(pil_image):
         """
-        改進版的PIL圖片轉換為QImage函數，增加更多錯誤處理和容錯能力
+        將PIL圖像轉換為QImage
         
         Parameters:
-            pil_img (PIL.Image): PIL圖片對象
-            
+            pil_image (PIL.Image): PIL圖像對象
+        
         Returns:
             QImage: 轉換後的QImage對象
         """
         try:
-            # 確保圖片模式正確
-            if pil_img.mode == "RGB":
-                # 方法1: 使用numpy進行轉換，這是最可靠的方法
-                import numpy as np
-                img_array = np.array(pil_img)
-                height, width, channels = img_array.shape
-                bytes_per_line = channels * width
-                # 創建副本以避免numpy數組被回收導致問題
-                qimg = QImage(img_array.data, width, height, bytes_per_line, QImage.Format_RGB888).copy()
-                return qimg
-            elif pil_img.mode == "RGBA":
-                # 透明圖片
-                import numpy as np
-                img_array = np.array(pil_img)
-                height, width, channels = img_array.shape
-                bytes_per_line = channels * width
-                # 創建副本
-                qimg = QImage(img_array.data, width, height, bytes_per_line, QImage.Format_RGBA8888).copy()
-                return qimg
-            else:
-                # 其他模式都先轉為RGB
-                rgb_img = pil_img.convert("RGB")
-                return ImageLoader.enhanced_pil_to_qimage(rgb_img)
-        except Exception as e:
-            logger.warning(f"首選轉換方法失敗: {e}，嘗試替代方法")
+            # 確保圖片是RGB模式
+            if pil_image.mode != "RGB":
+                pil_image = pil_image.convert("RGB")
             
-            try:
-                # 方法2: 保存為臨時文件再載入
-                temp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
-                temp_filename = temp.name
-                temp.close()
-                
-                # 保存為PNG文件
-                pil_img.convert("RGB").save(temp_filename)
-                
-                # 使用Qt直接載入
-                qimg = QImage(temp_filename)
-                
-                # 刪除臨時文件
-                try:
-                    os.unlink(temp_filename)
-                except:
-                    pass
-                    
-                return qimg
-            except Exception as e2:
-                logger.error(f"所有轉換方法都失敗: {e2}")
-                
-                # 返回一個空白的紅色圖像作為錯誤指示
-                qimg = QImage(100, 100, QImage.Format_RGB888)
-                qimg.fill(Qt.red)
-                return qimg
-    
-    @staticmethod
-    def pil_to_qimage(pil_img):
-        """將PIL圖片轉換為QImage，正確處理各種圖片模式，使用增強版本"""
-        return ImageLoader.enhanced_pil_to_qimage(pil_img)
+            # 轉換為numpy數組
+            img_data = np.array(pil_image)
+            height, width, channels = img_data.shape
+            
+            # 創建QImage
+            bytes_per_line = channels * width
+            qimg = QImage(img_data.data, width, height, bytes_per_line, QImage.Format_RGB888)
+            
+            return qimg
+        except Exception as e:
+            logger.error(f"轉換PIL圖像到QImage時出錯: {e}")
+            # 返回一個1x1的空白QImage作為後備
+            return QImage(1, 1, QImage.Format_RGB888)
 
 # 用於直接測試圖片載入器
 def load_image(image_path, size=None):
