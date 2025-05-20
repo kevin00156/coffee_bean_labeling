@@ -5,9 +5,10 @@ WORKING_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 
 # 數據集相關常數
 DATASET_NAME = "dataset/coffee_bean_dataset"
-SUB_DATASET_NAME = "splits/split_9"  # 換分割檔的時候改這裡
+SUB_DATASET_NAME = "splits/split_6"  # 換分割檔的時候改這裡
 THUMBNAIL_SIZE = (200, 200)  # 縮圖尺寸用於總覽
 WHITE_LIST = ["IMMATURE"]  # 白名單標籤
+MAX_IMAGES = 2000  # 最多顯示200張圖片
 
 # 文件路徑配置
 def get_path_configs():
