@@ -554,44 +554,108 @@ class CoffeeBeanLabeler(QMainWindow):
     def show_overview(self):
         """顯示總覽模式"""
         logger.info("開啟總覽模式")
+        
+        # 檢查是否已經有總覽視窗在加載中
+        overview_window = OverviewWindow._instance
+        
+        # 使用 LoadingDialog 類的新功能檢查是否已有加載對話框打開
+        if LoadingDialog.is_dialog_open():
+            logger.warning("已有加載對話框打開，請等待完成")
+            QMessageBox.information(self, "請稍候", "正在處理中，請等待當前操作完成")
+            return
+        
+        # 如果已經有視窗正在加載中，不允許重複操作
+        if overview_window is not None and hasattr(overview_window, 'loader_thread') and overview_window.loader_thread.isRunning():
+            logger.warning("總覽視窗正在加載圖片，請等待完成")
+            QMessageBox.information(self, "請稍候", "總覽視窗正在加載圖片，請等待完成後再操作")
+            
+            # 如果視窗已經存在但被最小化或隱藏，則重新顯示它
+            if overview_window.isMinimized():
+                overview_window.showNormal()
+            if not overview_window.isVisible():
+                overview_window.show()
+            overview_window.activateWindow()  # 將視窗帶到前台
+            return
+            
+        # 如果總覽視窗已經存在且可見，則直接激活它而不是重新創建
+        if overview_window is not None and overview_window.isVisible():
+            logger.info("總覽視窗已經開啟，激活現有視窗")
+            overview_window.activateWindow()  # 將視窗帶到前台
+            overview_window.raise_()  # 確保視窗在最前面
+            return
+        
         # 先創建並顯示加載對話框
         loading_dialog = LoadingDialog(parent=self)
+        loading_dialog.setWindowTitle("加載圖片中")
+        loading_dialog.setWindowModality(Qt.WindowModal)  # 模態對話框，阻止與其他窗口的交互
         loading_dialog.show()
         
-        # 創建總覽視窗但不立即顯示
+        # 創建或獲取總覽視窗單例但不立即顯示
         try:
-            self.overview_window = OverviewWindow(self.image_paths, self.data, self)
-            self.overview_window.view_image.connect(self.on_view_image_from_overview)
+            # 先處理 QApplication 事件，確保界面響應
+            QApplication.processEvents()
+            
+            # 不需要儲存實例引用，因為 OverviewWindow 已經是單例
+            overview_window = OverviewWindow(self.image_paths, self.data, self)
+            
+            # 確保信號只連接一次
+            try:
+                overview_window.view_image.disconnect(self.on_view_image_from_overview)
+            except:
+                pass  # 如果未連接，則忽略錯誤
+            overview_window.view_image.connect(self.on_view_image_from_overview)
             
             # 連接進度更新信號
-            if hasattr(self.overview_window, 'loader_thread'):
+            if hasattr(overview_window, 'loader_thread'):
                 # 將進度更新連接到對話框
-                self.overview_window.loader_thread.progress_updated.connect(
+                try:
+                    overview_window.loader_thread.progress_updated.disconnect()
+                except:
+                    pass  # 如果未連接，則忽略錯誤
+                
+                overview_window.loader_thread.progress_updated.connect(
                     lambda current, total: loading_dialog.update_progress(current, total)
                 )
                 
+                # 每次進度更新時處理事件，確保界面響應
+                overview_window.loader_thread.progress_updated.connect(
+                    lambda current, total: QApplication.processEvents()
+                )
+                
                 # 當載入完成時，關閉對話框並顯示總覽視窗
-                self.overview_window.loader_thread.loading_finished.connect(
-                    lambda: self._show_overview_window(loading_dialog)
+                try:
+                    overview_window.loader_thread.loading_finished.disconnect()
+                except:
+                    pass  # 如果未連接，則忽略錯誤
+                    
+                overview_window.loader_thread.loading_finished.connect(
+                    lambda: self._show_overview_window(loading_dialog, overview_window)
                 )
             else:
                 # 如果沒有載入線程，直接顯示總覽視窗
                 loading_dialog.close()
-                self.overview_window.show()
+                overview_window.show()
         except Exception as e:
             logger.error(f"創建總覽視窗時出錯: {e}")
             loading_dialog.close()
             QMessageBox.critical(self, "錯誤", f"創建總覽視窗時出錯: {e}")
     
-    def _show_overview_window(self, loading_dialog):
+    def _show_overview_window(self, loading_dialog, overview_window):
         """關閉加載對話框並顯示總覽視窗"""
         try:
+            # 先處理任何待處理的事件
+            QApplication.processEvents()
+            
             # 先確保對話框已關閉
             loading_dialog.close()
             loading_dialog.deleteLater()
             
+            # 再次處理事件，確保界面響應
+            QApplication.processEvents()
+            
             # 顯示總覽視窗
-            self.overview_window.show()
+            overview_window.show()
+            overview_window.activateWindow()  # 確保視窗在前台
             logger.info("總覽視窗已顯示")
         except Exception as e:
             logger.error(f"顯示總覽視窗時出錯: {e}")
@@ -605,16 +669,25 @@ class CoffeeBeanLabeler(QMainWindow):
     def on_view_image_from_overview(self, img_path):
         """從總覽模式選擇圖片進行標記"""
         logger.info(f"從總覽模式選擇圖片: {img_path}")
+        # 創建或獲取標記視窗單例
         labeling_window = LabelingWindow(img_path, self.data, self.labels, self.image_paths, self.current_index, self)
+        
+        # 確保信號只連接一次
+        try:
+            labeling_window.labels_changed.disconnect(self.on_labels_changed)
+        except:
+            pass  # 如果未連接，則忽略錯誤
         labeling_window.labels_changed.connect(self.on_labels_changed)
-        labeling_window.show()
     
     def on_labels_changed(self, img_path, new_labels):
         """標籤變更時更新總覽視窗"""
         logger.debug(f"標籤已變更: {img_path}, 新標籤: {new_labels}")
-        if hasattr(self, 'overview_window') and self.overview_window.isVisible():
-            self.overview_window.update_thumbnail_label(img_path, new_labels)
-            self.overview_window.refresh_data()
+        # 獲取總覽視窗單例（如果存在）
+        overview_window = OverviewWindow._instance
+        if overview_window is not None and overview_window.isVisible():
+            # 只更新縮略圖的標籤，不刷新整個視圖
+            overview_window.update_thumbnail_label(img_path, new_labels)
+            # 不再呼叫 refresh_data()，避免滾動位置重置
 
     # 導航方法
     def prev_image(self):
