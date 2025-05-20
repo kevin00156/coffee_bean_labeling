@@ -5,7 +5,7 @@ from PyQt5.QtGui import QPixmap, QImage, QPainter, QColor, QFont
 from PyQt5.QtCore import Qt, pyqtSignal, QSize, QRect
 
 from .logger import get_logger
-from .constants import THUMBNAIL_SIZE, STYLES
+from .constants import THUMBNAIL_SIZE, STYLES, WHITE_LIST
 
 # 獲取當前模組的 logger
 logger = get_logger('widgets')
@@ -29,6 +29,7 @@ class ThumbnailWidget(QWidget):
         self.image_set = False
         self.labels = []
         self.error_state = False  # 追踪是否圖片顯示出錯
+        self.target_class = None  # 目標類別
         
         # 設置固定大小
         self.setFixedSize(160, 180)
@@ -139,6 +140,16 @@ class ThumbnailWidget(QWidget):
             error_img.fill(QColor(255, 0, 0))  # 紅色
             self.image_label.setPixmap(QPixmap.fromImage(error_img))
     
+    def set_target_class(self, target_class):
+        """
+        設置目標類別
+        
+        Parameters:
+            target_class (str): 目標類別名稱
+        """
+        self.target_class = target_class
+        self.update_label_display()
+    
     def update_label_display(self):
         """更新標籤顯示"""
         # 獲取文件名
@@ -151,11 +162,11 @@ class ThumbnailWidget(QWidget):
                 short_labels = short_labels[:22] + "..."
             self.info_label.setText(short_labels)
             
-            # 根據標籤數量調整樣式
-            if len(self.labels) > 1:
-                self.info_label.setStyleSheet("color: red; font-size: 10px;")
-            else:
+            # 根據是否包含目標類別決定顏色
+            if self.target_class and self.target_class in self.labels:
                 self.info_label.setStyleSheet("color: blue; font-size: 10px;")
+            else:
+                self.info_label.setStyleSheet("color: red; font-size: 10px;")
         else:
             # 如果沒有標籤，則顯示文件名
             if len(filename) > 15:

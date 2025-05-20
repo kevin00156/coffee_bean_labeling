@@ -13,12 +13,12 @@
 ## 安裝依賴與環境
 如果你使用的是傳統環境或conda環境，使用以下命令
 ```bash
-pip install -e . 
+pip install -r requirements.txt
 ```
 **推薦**使用uv管理專案  
 ```bash
 uv venv
-uv pip install -e .
+uv pip install -r requirements.txt
 ```
 
 ## 運行程式

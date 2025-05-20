@@ -668,6 +668,13 @@ class OverviewWindow(QMainWindow):
                     except Exception as e:
                         logger.error(f"從緩存設置圖片時出錯: {e}")
             
+            # 設置目標類別
+            target_class = None
+            if self.current_view_index > 0:
+                if self.current_view_index <= len(self.all_labels):
+                    target_class = self.all_labels[self.current_view_index - 1]
+            thumbnail.set_target_class(target_class)
+            
             # 添加到網格
             if row >= 0 and col >= 0:
                 self.grid_layout.addWidget(thumbnail, row, col)
@@ -687,7 +694,16 @@ class OverviewWindow(QMainWindow):
         
         # 更新縮略圖顯示
         if img_path in self.thumbnail_widgets and self.thumbnail_widgets[img_path] is not None:
-            self.thumbnail_widgets[img_path].set_labels(new_labels)
+            thumbnail = self.thumbnail_widgets[img_path]
+            thumbnail.set_labels(new_labels)
+            
+            # 更新目標類別
+            target_class = None
+            if self.current_view_index > 0:
+                if self.current_view_index <= len(self.all_labels):
+                    target_class = self.all_labels[self.current_view_index - 1]
+            thumbnail.set_target_class(target_class)
+            
             logger.debug(f"更新縮略圖標籤: {img_path} -> {new_labels}")
             
             # 智能更新標籤分類
@@ -696,30 +712,8 @@ class OverviewWindow(QMainWindow):
             # 更新計數
             self.label_counts = {label: len(imgs) for label, imgs in self.label_images.items()}
             
-            # 如果當前視圖是特定標籤視圖，可能需要從視圖中移除這個縮略圖
-            if self.current_view_index > 0:
-                # 獲取當前標籤
-                current_label = None
-                if self.current_view_index <= len(self.all_labels):
-                    current_label = self.all_labels[self.current_view_index - 1]
-                elif self.current_view_index <= len(self.all_labels) + len(self.special_labels):
-                    special_idx = self.current_view_index - len(self.all_labels) - 1
-                    current_label = self.special_labels[special_idx]
-                
-                # 檢查是否需要從當前視圖中移除
-                if current_label and current_label not in ["All"]:
-                    if current_label == "None" and new_labels:
-                        # 如果當前是無標籤視圖，但現在有標籤了，需要從視圖中移除
-                        self.thumbnail_widgets[img_path].setVisible(False)
-                    elif current_label != "None" and current_label not in new_labels:
-                        # 如果當前是特定標籤視圖，但現在沒有這個標籤了，需要從視圖中移除
-                        self.thumbnail_widgets[img_path].setVisible(False)
-                    elif current_label == "WHITELIST" and not any(label in WHITE_LIST for label in new_labels):
-                        # 如果當前是白名單視圖，但現在沒有白名單標籤了，需要從視圖中移除
-                        self.thumbnail_widgets[img_path].setVisible(False)
-                    elif current_label == "NOT IN WHITELIST" and (not new_labels or any(label in WHITE_LIST for label in new_labels)):
-                        # 如果當前是非白名單視圖，但現在有白名單標籤或無標籤了，需要從視圖中移除
-                        self.thumbnail_widgets[img_path].setVisible(False)
+            # 不再立即從視圖中移除縮略圖，即使目標類別改變
+            # 將在下一次刷新時處理視圖更新
             
             # 更新標題顯示的計數
             self._update_header_counts()
