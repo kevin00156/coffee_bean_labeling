@@ -41,14 +41,20 @@ class OverviewWindow(QMainWindow):
             data (dict): 數據集字典
             parent (QWidget, optional): 父窗口
         """
-        # 如果已經初始化過，則跳過
-        if self._init_done:
-            self.update_data(all_image_paths, data)
-            return
+        # 確保只進行一次初始化，但始終更新數據
+        if not self._init_done:
+            super().__init__(parent)
+            self._init_ui()
+            self._init_done = True
+            logger.debug("總覽視窗已完成初始化")
             
-        super().__init__(parent)
-        self.all_image_paths = all_image_paths
-        self.data = data
+        # 每次都更新數據
+        self.update_data(all_image_paths, data)
+        
+    def _init_ui(self):
+        """初始化UI元素，只在第一次創建實例時調用"""
+        self.all_image_paths = []
+        self.data = {}
         self.image_cache = {}  # 圖片緩存
         self.thumbnail_widgets = {}  # 縮略圖小部件緩存
         
@@ -64,66 +70,12 @@ class OverviewWindow(QMainWindow):
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
         
-        # 標籤分類
-        self.all_labels = set()
-        for labels_list in data['dataset'].values():
-            if not labels_list:
-                self.all_labels.add("None")
-            else:
-                self.all_labels.update(labels_list)
-        
-        self.all_labels.add("None")  # 確保有無標籤類別
-        
-        # 轉換為排序列表，None放在最前
-        self.all_labels = sorted(list(self.all_labels))
-        if "None" in self.all_labels:
-            self.all_labels.remove("None")
-            self.all_labels = ["None"] + self.all_labels
-        
-        # 為特殊檢視準備兩個特殊標籤
+        # 初始化標籤和特殊標籤
+        self.all_labels = []
         self.special_labels = ["NOT IN WHITELIST", "WHITELIST"]
+        self.label_images = {}
+        self.label_counts = {}
         
-        # 為每個標籤收集圖片，確保所有相關圖片都列出
-        self.label_images = {label: [] for label in self.all_labels}
-        # 為特殊標籤也創建圖片容器
-        for label in self.special_labels:
-            self.label_images[label] = []
-        
-        # 查找所有圖片路徑，包括尚未在數據集中的圖片
-        all_image_paths_set = set(all_image_paths)
-        dataset_paths_set = set(data['dataset'].keys())
-        
-        # 處理尚未在數據集中的圖片
-        unlabeled_paths = all_image_paths_set - dataset_paths_set
-        for path in unlabeled_paths:
-            self.label_images["None"].append(path)
-        
-        # 處理已在數據集中的圖片，確保每張圖片在每個相關標籤下都顯示
-        for path, labels_list in data['dataset'].items():
-            if not labels_list:
-                self.label_images["None"].append(path)
-            else:
-                # 處理標準標籤
-                for label in labels_list:
-                    if label in self.all_labels:
-                        self.label_images[label].append(path)
-                
-                # 處理白名單特殊分類
-                if any(label in WHITE_LIST for label in labels_list):
-                    self.label_images["WHITELIST"].append(path)
-                elif labels_list:  # 確保有標籤且都不在白名單中
-                    no_whitelist = True
-                    for label in labels_list:
-                        if label in WHITE_LIST:
-                            no_whitelist = False
-                            break
-                    if no_whitelist:
-                        self.label_images["NOT IN WHITELIST"].append(path)
-        
-        # 計算每個標籤的圖片數量
-        self.label_counts = {label: len(imgs) for label, imgs in self.label_images.items()}
-        
-        # 建立UI
         # 顯示模式選擇
         mode_layout = QHBoxLayout()
         
@@ -169,14 +121,38 @@ class OverviewWindow(QMainWindow):
         # 設置鍵盤快捷鍵
         self.setup_shortcuts()
         
-        # 初始化顯示
-        self.update_view()
+        # 確保信號連接正常
+        # 這一步是關鍵，確保信號連接只發生一次
+        self._ensure_signal_connections()
         
-        # 啟動圖片預載入線程
-        self.start_image_loader()
+    def _ensure_signal_connections(self):
+        """確保所有信號連接都正確建立"""
+        logger.debug("確保信號連接正確建立")
         
-        self._init_done = True
-        logger.debug("總覽視窗已初始化")
+        # 確保縮略圖的點擊信號正確連接
+        for img_path, thumbnail in self.thumbnail_widgets.items():
+            if thumbnail is not None:
+                try:
+                    # 先斷開舊的連接
+                    thumbnail.clicked.disconnect()
+                except:
+                    pass  # 如果未連接，則忽略錯誤
+                
+                # 重新連接信號
+                thumbnail.clicked.connect(self.on_thumbnail_clicked)
+                logger.debug(f"重新連接縮略圖信號: {img_path}")
+        
+        # 在這裡可以添加其他需要確保連接的信號
+        
+    def on_thumbnail_clicked(self, img_path):
+        """當縮略圖被點擊時調用"""
+        # 增加日誌來調試點擊事件
+        logger.debug(f"縮略圖被點擊: {img_path}, 發送檢視信號")
+        # 確保信號正確發送
+        self.view_image.emit(img_path)
+        
+        # 使用定時器延遲執行，確保信號有時間被處理
+        QTimer.singleShot(50, lambda: self.statusBar().showMessage(f"檢視圖片: {os.path.basename(img_path)}"))
     
     def update_data(self, all_image_paths, data):
         """
@@ -241,8 +217,14 @@ class OverviewWindow(QMainWindow):
         # 更新計數
         self.label_counts = {label: len(imgs) for label, imgs in self.label_images.items()}
         
+        # 每次更新數據後，重新確保信號連接
+        self._ensure_signal_connections()
+        
         # 更新顯示
         self.update_view()
+        
+        # 啟動圖片預載入線程
+        self.start_image_loader()
     
     def setup_shortcuts(self):
         """設置鍵盤快捷鍵"""
@@ -680,11 +662,6 @@ class OverviewWindow(QMainWindow):
                 self.grid_layout.addWidget(thumbnail, row, col)
         except Exception as e:
             logger.error(f"添加縮略圖時發生錯誤: {e}")
-    
-    def on_thumbnail_clicked(self, img_path):
-        """當縮略圖被點擊時調用"""
-        self.view_image.emit(img_path)
-        logger.debug(f"縮略圖被點擊: {img_path}")
     
     def update_thumbnail_label(self, img_path, new_labels):
         """更新縮略圖的標籤"""
