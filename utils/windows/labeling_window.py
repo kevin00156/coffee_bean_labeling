@@ -102,11 +102,16 @@ class LabelingWindow(QMainWindow):
         row, col = 0, 0
         max_cols = 4
         
+        # 確保圖片路徑存在於資料集中
+        if img_path not in data['dataset']:
+            data['dataset'][img_path] = []
+            logger.debug(f"在資料集中創建新路徑: {img_path}")
+        
         for key, label in labels_dict.items():
             btn = QPushButton(f"{key}: {label}")
             
             # 檢查是否已有此標籤
-            if img_path in data['dataset'] and label in data['dataset'][img_path]:
+            if label in data['dataset'][img_path]:
                 btn.setStyleSheet("background-color: #a3c2c2;")
             
             btn.clicked.connect(lambda checked, lbl=label: self.toggle_label(lbl))
@@ -161,6 +166,11 @@ class LabelingWindow(QMainWindow):
         self.data = data
         self.labels_dict = labels_dict
         
+        # 確保圖片路徑存在於資料集中
+        if img_path not in self.data['dataset']:
+            self.data['dataset'][img_path] = []
+            logger.debug(f"在資料集中創建新路徑: {img_path}")
+        
         # 更新視窗標題
         self.setWindowTitle(f"標記視窗 - {os.path.basename(img_path)}")
         
@@ -189,7 +199,7 @@ class LabelingWindow(QMainWindow):
         
         # 更新按鈕狀態
         for label, btn in self.label_buttons.items():
-            if img_path in self.data['dataset'] and label in self.data['dataset'][img_path]:
+            if label in self.data['dataset'][img_path]:
                 btn.setStyleSheet("background-color: #a3c2c2;")
             else:
                 btn.setStyleSheet("")
@@ -310,6 +320,11 @@ class LabelingWindow(QMainWindow):
         self.img_path = new_img_path
         self.setWindowTitle(f"標記視窗 - {os.path.basename(new_img_path)}")
         
+        # 確保新圖片路徑存在於資料集中
+        if new_img_path not in self.data['dataset']:
+            self.data['dataset'][new_img_path] = []
+            logger.debug(f"在資料集中創建新路徑: {new_img_path}")
+        
         # 載入新圖片
         try:
             self.original_image = Image.open(new_img_path)
@@ -320,7 +335,7 @@ class LabelingWindow(QMainWindow):
         
         # 更新按鈕狀態
         for label, btn in self.label_buttons.items():
-            if new_img_path in self.data['dataset'] and label in self.data['dataset'][new_img_path]:
+            if label in self.data['dataset'][new_img_path]:
                 btn.setStyleSheet("background-color: #a3c2c2;")
             else:
                 btn.setStyleSheet("")
@@ -376,6 +391,11 @@ class LabelingWindow(QMainWindow):
     def toggle_label(self, label):
         """切換標籤狀態"""
         current_path = self.img_path
+        
+        # 確保目前路徑存在於資料集中
+        if current_path not in self.data['dataset']:
+            self.data['dataset'][current_path] = []
+            logger.debug(f"在資料集中創建新路徑: {current_path}")
         
         # 切換標籤
         if label in self.data['dataset'][current_path]:

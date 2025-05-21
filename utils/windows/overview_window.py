@@ -10,7 +10,7 @@ from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from ..logger import get_logger
 from ..image_loader import ImageLoader
 from ..widgets import ThumbnailWidget
-from ..constants import WHITE_LIST
+from ..constants import WHITE_LIST, MAX_IMAGES
 
 # 獲取當前模組的 logger
 logger = get_logger('overview_window')
@@ -601,7 +601,6 @@ class OverviewWindow(QMainWindow):
             QApplication.processEvents()
         
         # 限制顯示的圖片數量，避免過多圖片導致卡頓
-        MAX_IMAGES = 200  # 最多顯示200張圖片
         if len(label_imgs) > MAX_IMAGES:
             logger.warning(f"標籤 {label} 有 {len(label_imgs)} 張圖片，僅顯示前 {MAX_IMAGES} 張")
             label_imgs = label_imgs[:MAX_IMAGES]
